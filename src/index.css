@@ -1,47 +1,69 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+# DevMind AI
 
-:root {
-  color-scheme: dark;
-  font-family: 'Inter', 'Segoe UI', sans-serif;
-  line-height: 1.5;
-  font-weight: 500;
-  background: #090d1a;
-  color: #e5eefb;
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
+A production-oriented AI software engineering platform built with React + TypeScript, Vite, Tailwind CSS, and a secure server-side AI boundary.
 
-html, body, #root {
-  min-height: 100%;
-  height: 100%;
-  margin: 0;
-  background:
-    radial-gradient(circle at top, rgba(79, 70, 229, 0.18), transparent 30%),
-    linear-gradient(180deg, #090d1a 0%, #0f172a 100%);
-}
+## Features
 
-body {
-  min-height: 100vh;
-}
+- Responsive dark-mode dashboard
+- Project creation and project management
+- File explorer with create, rename, edit, and delete workflows
+- Monaco code editor with multiple file tabs
+- AI coding assistant panel with server-side provider boundary
+- Terminal and review panels for code and testing workflows
+- Model settings and provider setup guidance
+- Local persistence for project state in the browser
 
-* {
-  box-sizing: border-box;
-}
+## Stack
 
-button, input, textarea, select {
-  font: inherit;
-}
+- Frontend: React, TypeScript, Vite, Tailwind CSS, Monaco Editor
+- API: Node.js + Express + TypeScript
+- Security: validated inputs, server-only secrets, no API keys in the browser bundle
+- Testing: Vitest smoke tests
 
-::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
+## Quick start
 
-::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.35);
-  border-radius: 9999px;
-}
+1. Install dependencies:
+
+   npm install
+
+2. Create a local environment file based on `.env.example`:
+
+   cp .env.example .env
+
+3. Add values for any provider you want to enable on the server. The app still runs safely when credentials are missing and shows a configuration banner instead of pretending AI is live.
+
+4. Start the app:
+
+   npm run dev
+
+5. Open the frontend at http://localhost:5173 and the API at http://localhost:3001/api/health.
+
+## Environment variables
+
+Create a `.env` file containing only server-side values:
+
+```bash
+PORT=3001
+AI_PROVIDER=openai
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-4o-mini
+ANTHROPIC_API_KEY=
+ANTHROPIC_MODEL=claude-3-5-sonnet-20241022
+GOOGLE_API_KEY=
+GOOGLE_MODEL=gemini-1.5-flash
+```
+
+Do not add real secrets to the repository or client code. Keep them in a secure local environment or a managed secrets store.
+
+## Build and test
+
+```bash
+npm run build
+npm test
+```
+
+## Notes
+
+- The platform includes the server-side AI boundary, project management UI, editor workspace, and readiness states for provider configuration.
+- A real sandboxed execution backend is still required for executing untrusted code or host-level commands safely.
+- The app intentionally avoids fake AI success states when model credentials are not configured.
