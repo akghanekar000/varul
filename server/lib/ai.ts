@@ -1,357 +1,304 @@
 import { z } from 'zod';
 
-export const AI_PROVIDER_NAMES = ['openai', 'anthropic', 'google'] as const;
-export type SupportedAiProvider = (typeof AI_PROVIDER_NAMES)[number];
-
 export const aiChatSchema = z.object({
-  message: z.string().trim().min(1).max(4000),
-  projectId: z
-    .string()
-    .trim()
-    .min(1)
-    .max(120)
-    .optional()
-    .transform((value) => value || undefined)
+  message: z.string().trim().min(1).max(2000),
+  projectId: z.string().optional()
 });
 
-export const DEFAULT_MODEL_BY_PROVIDER: Record<SupportedAiProvider, string> = {
-  openai: 'gpt-4o-mini',
-  anthropic: 'claude-3-5-sonnet-20241022',
-  google: 'gemini-1.5-flash'
-};
+export type ProviderName = 'openai' | 'anthropic' | 'google' | 'huggingface';
 
-export type ProviderStatus = {
-  name: SupportedAiProvider;
-  key: string;
-  enabled: boolean;
-  defaultModel: string;
-  supportsStreaming: boolean;
-};
+export const providerStatus = [
+  { name: 'openai', key: 'OPENAI_API_KEY', enabled: Boolean(process.env.OPENAI_API_KEY) },
+  { name: 'anthropic', key: 'ANTHROPIC_API_KEY', enabled: Boolean(process.env.ANTHROPIC_API_KEY) },
+  { name: 'google', key: 'GOOGLE_API_KEY', enabled: Boolean(process.env.GOOGLE_API_KEY) },
+  { name: 'huggingface', key: 'HF_TOKEN', enabled: Boolean(process.env.HF_TOKEN) }
+];
 
-export type ProviderConfig = {
-  provider: SupportedAiProvider;
-  apiKey: string | undefined;
-  model: string;
-  defaultModel: string;
-  configured: boolean;
-};
+export function getAiSetupGuide() {
+  const configured = providerStatus.filter((provider) => provider.enabled);
 
-export type AiResponseStatus = 'ok' | 'config-required' | 'provider-error' | 'timeout' | 'runtime-error';
-
-export type AiResponse = {
-  status: AiResponseStatus;
-  provider: string;
-  model: string | null;
-  reply: string;
-  usage: Record<string, unknown> | null;
-  fallback?: {
-    status: 'fallback';
-    provider: 'local-planner';
-    model: 'devmind-agent';
-    reply: string;
-    usage: null;
+  return {
+    status: configured.length ? 'partial' : 'missing',
+    providers: providerStatus,
+    message:
+      configured.length > 0
+        ? 'AI provider credentials are partially configured. Review the env values and restart the server.'
+        : 'No AI provider credentials were detected. Add OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_API_KEY, or HF_TOKEN in the server environment to enable live model access.'
   };
-  error?: string;
-  details?: unknown;
-};
-
-export function normalizeProvider(value?: string): SupportedAiProvider {
-  const normalized = (value ?? 'openai').trim().toLowerCase();
-  if ((AI_PROVIDER_NAMES as readonly string[]).includes(normalized)) {
-    return normalized as SupportedAiProvider;
-  }
-  return 'openai';
 }
 
-export function resolveAiProviderConfig(env: NodeJS.ProcessEnv = process.env): ProviderConfig {
-  const provider = normalizeProvider(env.AI_PROVIDER);
-  const model =
-    (env[`${provider.toUpperCase()}_MODEL`] ?? DEFAULT_MODEL_BY_PROVIDER[provider])?.trim() ||
-    DEFAULT_MODEL_BY_PROVIDER[provider];
-  const apiKey = env[`${provider.toUpperCase()}_API_KEY`]?.trim() || undefined;
+export function getConfiguredProviderName(providerOverride?: string) {
+  const requested = (providerOverride ?? process.env.AI_PROVIDER ?? 'huggingface').trim().toLowerCase();
+
+  if (requested === 'hf' || requested === 'huggingface') {
+    return 'huggingface';
+  }
+
+  if (requested === 'openai') {
+    return 'openai';
+  }
+
+  if (requested === 'anthropic') {
+    return 'anthropic';
+  }
+
+  if (requested === 'google') {
+    return 'google';
+  }
+
+  if (process.env.HF_TOKEN) {
+    return 'huggingface';
+  }
+
+  if (process.env.OPENAI_API_KEY) {
+    return 'openai';
+  }
+
+  if (process.env.ANTHROPIC_API_KEY) {
+    return 'anthropic';
+  }
+
+  if (process.env.GOOGLE_API_KEY) {
+    return 'google';
+  }
+
+  return 'huggingface';
+}
+
+export function getProviderConfig(providerOverride?: string) {
+  const providerName = getConfiguredProviderName(providerOverride);
+  const provider = providerName;
+
+  const apiKey = provider === 'huggingface'
+    ? process.env.HF_TOKEN
+    : process.env[`${provider.toUpperCase()}_API_KEY`];
+
+  const model = provider === 'openai'
+    ? process.env.OPENAI_MODEL || 'gpt-4o-mini'
+    : provider === 'anthropic'
+      ? process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20241022'
+      : provider === 'google'
+        ? process.env.GOOGLE_MODEL || 'gemini-1.5-flash'
+        : process.env.HF_MODEL || 'Qwen/Qwen2.5-Coder-7B-Instruct';
 
   return {
     provider,
-    apiKey,
     model,
-    defaultModel: DEFAULT_MODEL_BY_PROVIDER[provider],
-    configured: Boolean(apiKey)
+    apiKey,
+    isConfigured: Boolean(apiKey)
   };
 }
 
-export function getAiSetupGuide(env: NodeJS.ProcessEnv = process.env) {
-  const providers: ProviderStatus[] = AI_PROVIDER_NAMES.map((provider) => ({
-    name: provider,
-    key: `${provider.toUpperCase()}_API_KEY`,
-    enabled: Boolean(env[`${provider.toUpperCase()}_API_KEY`]?.trim()),
-    defaultModel: DEFAULT_MODEL_BY_PROVIDER[provider],
-    supportsStreaming: true
-  }));
+export function buildProviderRequest(providerOverride: string, message: string) {
+  const provider = getConfiguredProviderName(providerOverride);
+  const config = getProviderConfig(provider);
 
-  const configured = providers.filter((provider) => provider.enabled);
+  if (!config || !config.apiKey) {
+    throw new Error(`No API key configured for ${provider}.`);
+  }
+
+  const normalizedProvider = provider === 'huggingface' ? 'huggingface' : provider;
+
+  if (normalizedProvider === 'openai') {
+    return {
+      provider: 'openai',
+      endpoint: 'https://api.openai.com/v1/chat/completions',
+      model: config.model,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${config.apiKey}`
+      },
+      body: {
+        model: config.model,
+        messages: [{ role: 'user', content: message }],
+        temperature: 0.2,
+        max_tokens: 800
+      }
+    };
+  }
+
+  if (normalizedProvider === 'anthropic') {
+    return {
+      provider: 'anthropic',
+      endpoint: 'https://api.anthropic.com/v1/messages',
+      model: config.model,
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': config.apiKey,
+        'anthropic-version': '2023-06-01'
+      },
+      body: {
+        model: config.model,
+        max_tokens: 800,
+        temperature: 0.2,
+        messages: [{ role: 'user', content: message }]
+      }
+    };
+  }
+
+  if (normalizedProvider === 'google') {
+    return {
+      provider: 'google',
+      endpoint: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent',
+      model: config.model,
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': config.apiKey
+      },
+      body: {
+        contents: [{ parts: [{ text: message }] }],
+        generationConfig: { temperature: 0.2, maxOutputTokens: 800 }
+      }
+    };
+  }
 
   return {
-    status: configured.length === 0 ? 'missing' : configured.length === providers.length ? 'configured' : 'partial',
-    providers,
-    message:
-      configured.length === 0
-        ? 'No AI provider credentials were detected. Add OPENAI_API_KEY, ANTHROPIC_API_KEY, or GOOGLE_API_KEY in the server environment to enable live model access.'
-        : configured.length === providers.length
-          ? 'All supported AI provider credentials are configured. The server can call the selected provider.'
-          : 'Some AI provider credentials are configured. Review the selected provider and model before making live requests.',
-    configuredCount: configured.length
+    provider: 'huggingface',
+    endpoint: 'https://router.huggingface.co/v1/chat/completions',
+    model: config.model,
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${config.apiKey}`
+    },
+    body: {
+      model: config.model,
+      messages: [{ role: 'user', content: message }],
+      temperature: 0.2,
+      max_tokens: 800
+    }
   };
 }
 
-export function redactSecrets(value: unknown): string {
-  const raw = typeof value === 'string' ? value : JSON.stringify(value ?? {});
+export function extractProviderReply(providerName: string, body: unknown) {
+  const normalized = (providerName || '').toLowerCase();
 
-  return raw
-    .replace(/(sk-[A-Za-z0-9]+)/gi, '[REDACTED]')
-    .replace(/(Bearer\s+[A-Za-z0-9._-]+)/gi, 'Bearer [REDACTED]')
-    .replace(/(AIza[0-9A-Za-z\-_]{10,})/gi, '[REDACTED]')
-    .replace(/("apiKey"\s*:\s*")([^"]+)(")/gi, '$1[REDACTED]$3')
-    .replace(/(Authorization\s*:\s*\"?Bearer\s+[A-Za-z0-9._-]+)/gi, 'Authorization: Bearer [REDACTED]');
+  if (normalized === 'openai') {
+    return typeof body === 'object' && body !== null && 'choices' in body
+      ? (body as { choices?: Array<{ message?: { content?: string } }> }).choices?.[0]?.message?.content ?? null
+      : null;
+  }
+
+  if (normalized === 'anthropic') {
+    return typeof body === 'object' && body !== null && 'content' in body
+      ? (body as { content?: Array<{ text?: string }> }).content?.[0]?.text ?? null
+      : null;
+  }
+
+  if (normalized === 'google') {
+    if (typeof body !== 'object' || body === null || !('candidates' in body)) {
+      return null;
+    }
+
+    const candidates = (body as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> }).candidates ?? [];
+    const joined = candidates
+      .map((candidate) => candidate.content?.parts?.map((part) => part.text ?? '').join('') ?? '')
+      .join('');
+
+    return joined || null;
+  }
+
+  if (normalized === 'huggingface') {
+    return typeof body === 'object' && body !== null && 'choices' in body
+      ? (body as { choices?: Array<{ message?: { content?: string } }> }).choices?.[0]?.message?.content ?? null
+      : null;
+  }
+
+  return null;
 }
 
-export function buildPlannerReply(message: string): AiResponse['fallback'] {
-  const cleaned = message.trim() || 'your request';
+export function normalizeUsage(body: unknown) {
+  if (typeof body !== 'object' || body === null) {
+    return null;
+  }
+
+  const usage = (body as { usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } }).usage;
+  if (!usage) {
+    return null;
+  }
 
   return {
-    status: 'fallback',
+    promptTokens: usage.prompt_tokens ?? null,
+    completionTokens: usage.completion_tokens ?? null,
+    totalTokens: usage.total_tokens ?? null
+  };
+}
+
+export function redactSecret(value: string | undefined) {
+  if (!value) {
+    return 'not-configured';
+  }
+
+  if (value.length <= 8) {
+    return '***';
+  }
+
+  return `${value.slice(0, 4)}...${value.slice(-4)}`;
+}
+
+export function isTimeoutError(error: unknown) {
+  return Boolean(error && typeof error === 'object' && 'name' in error && (error as { name?: string }).name === 'AbortError');
+}
+
+export function buildPlannerReply(message: string) {
+  const cleaned = message.trim();
+
+  return {
+    status: 'ready',
+    message: `I can help with: ${cleaned}.\n\nImplementation plan:\n1. Clarify the target user, scope, and constraints.\n2. Map the required files and architecture.\n3. Draft the patch, review risks, and validate the relevant checks.\n4. Keep the work bounded and report actual verification results.\n5. Apply only approved changes and document any remaining gap.`,
     provider: 'local-planner',
-    model: 'devmind-agent',
-    reply: `I can help with: ${cleaned}\n\nImplementation plan:\n1. Clarify the target user and constraints.\n2. Inspect the relevant files and project structure.\n3. Draft a bounded patch with a clear diff.\n4. Review the change and run the relevant checks.\n5. Report verified results and any remaining limitations.`,
-    usage: null
+    model: 'devmind-agent'
   };
 }
 
-function extractReply(provider: SupportedAiProvider, payload: any): string | undefined {
-  if (provider === 'openai') {
-    const text = payload?.choices?.[0]?.message?.content;
-    if (Array.isArray(text)) {
-      return text.map((part: any) => part?.text ?? '').join('');
-    }
-    return typeof text === 'string' ? text : undefined;
-  }
+export function normalizeProviderError(statusCode: number | undefined, body: unknown, provider: string) {
+  const text = typeof body === 'string' ? body : JSON.stringify(body ?? {});
+  const safeText = text.length > 500 ? `${text.slice(0, 500)}...` : text;
 
-  if (provider === 'anthropic') {
-    const value = payload?.content;
-    const text = Array.isArray(value)
-      ? value.map((part: any) => part?.text ?? '').join('')
-      : typeof value === 'string'
-        ? value
-        : undefined;
-    return text || undefined;
-  }
-
-  const parts = payload?.candidates?.[0]?.content?.parts;
-  return Array.isArray(parts)
-    ? parts.map((part: any) => part?.text ?? '').join('') || undefined
-    : undefined;
-}
-
-export function createProviderRequest(provider: SupportedAiProvider, message: string, model: string, apiKey: string) {
-  switch (provider) {
-    case 'openai':
-      return {
-        endpoint: 'https://api.openai.com/v1/chat/completions',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`
-        },
-        payload: {
-          model,
-          messages: [{ role: 'user', content: message }],
-          temperature: 0.2
-        }
-      };
-    case 'anthropic':
-      return {
-        endpoint: 'https://api.anthropic.com/v1/messages',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01'
-        },
-        payload: {
-          model,
-          max_tokens: 800,
-          messages: [{ role: 'user', content: message }]
-        }
-      };
-    case 'google':
-      return {
-        endpoint: `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': apiKey
-        },
-        payload: {
-          contents: [{ parts: [{ text: message }] }],
-          generationConfig: {
-            temperature: 0.2,
-            maxOutputTokens: 800
-          }
-        }
-      };
-    default:
-      throw new Error(`Unsupported AI provider: ${provider}`);
-  }
-}
-
-export async function callAiProvider({
-  message,
-  provider,
-  apiKey,
-  model,
-  fetchImpl = globalThis.fetch,
-  timeoutMs = 30000
-}: {
-  message: string;
-  provider: SupportedAiProvider;
-  apiKey?: string;
-  model?: string;
-  fetchImpl?: typeof fetch;
-  timeoutMs?: number;
-}): Promise<AiResponse> {
-  const selectedProvider = normalizeProvider(provider);
-  const selectedModel =
-    (model || DEFAULT_MODEL_BY_PROVIDER[selectedProvider] || '').trim() || DEFAULT_MODEL_BY_PROVIDER[selectedProvider];
-
-  if (!apiKey || !apiKey.trim()) {
+  if (statusCode === 401 || statusCode === 403) {
     return {
-      status: 'config-required',
-      provider: selectedProvider,
-      model: selectedModel,
-      reply: buildPlannerReply(message).reply,
-      usage: null,
-      fallback: buildPlannerReply(message),
-      error: 'Missing API key',
-      details: { provider: selectedProvider, expectedEnv: `${selectedProvider.toUpperCase()}_API_KEY` }
+      status: 'provider-error',
+      provider,
+      error: 'provider_auth_failed',
+      message: 'The configured AI provider rejected the server API key.',
+      details: 'Authentication failed. The API key is valid on the server only and was not exposed to the browser.'
     };
   }
 
-  const request = createProviderRequest(selectedProvider, message, selectedModel, apiKey);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const response = await fetchImpl(request.endpoint, {
-      method: 'POST',
-      headers: request.headers,
-      body: JSON.stringify(request.payload),
-      signal: controller.signal
-    });
-
-    const responseText = await response.text();
-    let parsed: any = null;
-
-    try {
-      parsed = responseText ? JSON.parse(responseText) : null;
-    } catch {
-      parsed = null;
-    }
-
-    if (response.status === 429) {
-      return {
-        status: 'provider-error',
-        provider: selectedProvider,
-        model: selectedModel,
-        reply: buildPlannerReply(message).reply,
-        usage: null,
-        fallback: buildPlannerReply(message),
-        error: 'Rate limit exceeded',
-        details: redactSecrets(parsed ?? responseText)
-      };
-    }
-
-    if (response.status === 401 || response.status === 403) {
-      return {
-        status: 'provider-error',
-        provider: selectedProvider,
-        model: selectedModel,
-        reply: buildPlannerReply(message).reply,
-        usage: null,
-        fallback: buildPlannerReply(message),
-        error: 'Invalid API key',
-        details: redactSecrets(parsed ?? responseText)
-      };
-    }
-
-    if (!response.ok) {
-      return {
-        status: 'provider-error',
-        provider: selectedProvider,
-        model: selectedModel,
-        reply: buildPlannerReply(message).reply,
-        usage: null,
-        fallback: buildPlannerReply(message),
-        error: 'Provider request failed',
-        details: redactSecrets(parsed ?? responseText)
-      };
-    }
-
-    const reply = extractReply(selectedProvider, parsed);
-    if (!reply || !reply.trim()) {
-      return {
-        status: 'provider-error',
-        provider: selectedProvider,
-        model: selectedModel,
-        reply: buildPlannerReply(message).reply,
-        usage: null,
-        fallback: buildPlannerReply(message),
-        error: 'Invalid response format',
-        details: redactSecrets(parsed ?? responseText)
-      };
-    }
-
+  if (statusCode === 429) {
     return {
-      status: 'ok',
-      provider: selectedProvider,
-      model: selectedModel,
-      reply,
-      usage: parsed?.usage ?? null,
-      error: undefined,
-      details: undefined
+      status: 'provider-error',
+      provider,
+      error: 'rate_limited',
+      message: 'The provider rate limit was exceeded.',
+      details: 'Retry later or use a different model or provider configuration.'
     };
-  } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') {
-      return {
-        status: 'timeout',
-        provider: selectedProvider,
-        model: selectedModel,
-        reply: buildPlannerReply(message).reply,
-        usage: null,
-        fallback: buildPlannerReply(message),
-        error: 'Request timed out',
-        details: 'AI request exceeded the timeout window.'
-      };
-    }
-
-    return {
-      status: 'runtime-error',
-      provider: selectedProvider,
-      model: selectedModel,
-      reply: buildPlannerReply(message).reply,
-      usage: null,
-      fallback: buildPlannerReply(message),
-      error: error instanceof Error ? error.message : 'Unknown error',
-      details: redactSecrets(error instanceof Error ? error.message : String(error))
-    };
-  } finally {
-    clearTimeout(timer);
   }
-}
 
-export function toHttpResponse(body: AiResponse) {
-  const statusCode = body.status === 'provider-error' ? 502 : body.status === 'timeout' ? 504 : body.status === 'runtime-error' ? 500 : 200;
+  if (statusCode === 400) {
+    return {
+      status: 'provider-error',
+      provider,
+      error: 'invalid_request',
+      message: 'The provider rejected the request format.',
+      details: safeText
+    };
+  }
+
+  if (statusCode && statusCode >= 500) {
+    return {
+      status: 'provider-error',
+      provider,
+      error: 'provider_failure',
+      message: 'The provider returned a server error.',
+      details: safeText
+    };
+  }
+
   return {
-    statusCode,
-    payload: {
-      ...body,
-      fallback: body.fallback ?? null,
-      details: body.details ? redactSecrets(body.details) : undefined
-    }
+    status: 'provider-error',
+    provider,
+    error: 'provider_unavailable',
+    message: 'The provider request failed unexpectedly.',
+    details: safeText
   };
 }
